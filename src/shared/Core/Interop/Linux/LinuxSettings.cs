@@ -64,7 +64,7 @@ public class LinuxSettings : Settings
             }
 
             // Get all the files in the configuration directory and sort them alphabetically
-            IEnumerable<string> files = _fs.EnumerateFiles(configDir, "*").OrderBy(f => f);
+            IEnumerable<string> files = _fs.EnumerateFiles(configDir, "*").OrderBy(f => Path.GetFileName(f));
 
             // Read the contents of each file and concatenate them together
             var combinedFile = new StringBuilder();
