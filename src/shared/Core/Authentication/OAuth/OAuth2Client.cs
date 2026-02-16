@@ -321,10 +321,7 @@ namespace GitCredentialManager.Authentication.OAuth
                             return result;
                         }
 
-                        var error = JsonSerializer.Deserialize<ErrorResponseJson>(json, new JsonSerializerOptions
-                        {
-                            PropertyNameCaseInsensitive = true
-                        });
+                        var error = JsonSerializer.Deserialize<ErrorResponseJson>(json, JsonHelper.CaseInsensitiveOptions);
 
                         switch (error.Error)
                         {
