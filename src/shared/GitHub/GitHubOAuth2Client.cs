@@ -28,47 +28,34 @@ namespace GitHub
 
         private static string GetClientId(ISettings settings)
         {
-            // Check for developer override value
-            if (settings.TryGetSetting(
+            return settings.GetOAuthConfigValue(
                 GitHubConstants.EnvironmentVariables.DevOAuthClientId,
-                Constants.GitConfiguration.Credential.SectionName, GitHubConstants.GitConfiguration.Credential.DevOAuthClientId,
-                out string clientId))
-            {
-                return clientId;
-            }
-
-            return GitHubConstants.OAuthClientId;
+                Constants.GitConfiguration.Credential.SectionName,
+                GitHubConstants.GitConfiguration.Credential.DevOAuthClientId,
+                GitHubConstants.OAuthClientId);
         }
 
         private static Uri GetRedirectUri(ISettings settings, Uri targetUri)
         {
-            // Check for developer override value
-            if (settings.TryGetSetting(
-                GitHubConstants.EnvironmentVariables.DevOAuthRedirectUri,
-                Constants.GitConfiguration.Credential.SectionName, GitHubConstants.GitConfiguration.Credential.DevOAuthRedirectUri,
-                out string redirectUriStr) && Uri.TryCreate(redirectUriStr, UriKind.Absolute, out Uri redirectUri))
-            {
-                return redirectUri;
-            }
-
             // Only GitHub.com supports the new OAuth redirect URI today
-            return GitHubHostProvider.IsGitHubDotCom(targetUri)
+            Uri defaultUri = GitHubHostProvider.IsGitHubDotCom(targetUri)
                 ? GitHubConstants.OAuthRedirectUri
                 : GitHubConstants.OAuthLegacyRedirectUri;
+
+            return settings.GetOAuthConfigUri(
+                GitHubConstants.EnvironmentVariables.DevOAuthRedirectUri,
+                Constants.GitConfiguration.Credential.SectionName,
+                GitHubConstants.GitConfiguration.Credential.DevOAuthRedirectUri,
+                defaultUri);
         }
 
         private static string GetClientSecret(ISettings settings)
         {
-            // Check for developer override value
-            if (settings.TryGetSetting(
+            return settings.GetOAuthConfigValue(
                 GitHubConstants.EnvironmentVariables.DevOAuthClientSecret,
-                Constants.GitConfiguration.Credential.SectionName, GitHubConstants.GitConfiguration.Credential.DevOAuthClientSecret,
-                out string clientSecret))
-            {
-                return clientSecret;
-            }
-
-            return GitHubConstants.OAuthClientSecret;
+                Constants.GitConfiguration.Credential.SectionName,
+                GitHubConstants.GitConfiguration.Credential.DevOAuthClientSecret,
+                GitHubConstants.OAuthClientSecret);
         }
     }
 }

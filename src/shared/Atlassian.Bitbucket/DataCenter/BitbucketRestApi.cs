@@ -107,12 +107,7 @@ namespace Atlassian.Bitbucket.DataCenter
 
                     if (response.IsSuccessStatusCode)
                     {
-                        var loginOptions = JsonSerializer.Deserialize<LoginOptions>(json,
-                            new JsonSerializerOptions
-                            {
-                                PropertyNameCaseInsensitive = true,
-                                DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull
-                            });
+                        var loginOptions = JsonSerializer.Deserialize<LoginOptions>(json, JsonHelper.CaseInsensitiveIgnoreNullOptions);
 
                         if (loginOptions.Results.Any(r => "LOGIN_FORM".Equals(r.Type)))
                         {
