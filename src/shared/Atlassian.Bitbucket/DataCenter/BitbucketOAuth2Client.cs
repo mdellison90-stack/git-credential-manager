@@ -26,44 +26,29 @@ namespace Atlassian.Bitbucket.DataCenter
 
         private static string GetClientId(ISettings settings)
         {
-            // Check for developer override value
-            if (settings.TryGetSetting(
+            return settings.GetRequiredOAuthConfigValue(
                 DataCenterConstants.EnvironmentVariables.OAuthClientId,
-                Constants.GitConfiguration.Credential.SectionName, DataCenterConstants.GitConfiguration.Credential.OAuthClientId,
-                out string clientId))
-            {
-                return clientId;
-            }
-
-            throw new ArgumentException("Bitbucket DC OAuth Client ID must be defined");
+                Constants.GitConfiguration.Credential.SectionName,
+                DataCenterConstants.GitConfiguration.Credential.OAuthClientId,
+                "Bitbucket DC OAuth Client ID must be defined");
         }
 
         private static Uri GetRedirectUri(ISettings settings)
         {
-            // Check for developer override value
-            if (settings.TryGetSetting(
+            return settings.GetOAuthConfigUri(
                 DataCenterConstants.EnvironmentVariables.OAuthRedirectUri,
-                Constants.GitConfiguration.Credential.SectionName, DataCenterConstants.GitConfiguration.Credential.OAuthRedirectUri,
-                out string redirectUriStr) && Uri.TryCreate(redirectUriStr, UriKind.Absolute, out Uri redirectUri))
-            {
-                return redirectUri;
-            }
-
-            return DataCenterConstants.OAuth2RedirectUri;
+                Constants.GitConfiguration.Credential.SectionName,
+                DataCenterConstants.GitConfiguration.Credential.OAuthRedirectUri,
+                DataCenterConstants.OAuth2RedirectUri);
         }
 
         private static string GetClientSecret(ISettings settings)
         {
-            // Check for developer override value
-            if (settings.TryGetSetting(
+            return settings.GetRequiredOAuthConfigValue(
                 DataCenterConstants.EnvironmentVariables.OAuthClientSecret,
-                Constants.GitConfiguration.Credential.SectionName, DataCenterConstants.GitConfiguration.Credential.OAuthClientSecret,
-                out string clientSecret))
-            {
-                return clientSecret;
-            }
-
-            throw new ArgumentException("Bitbucket DC OAuth Client Secret must be defined");
+                Constants.GitConfiguration.Credential.SectionName,
+                DataCenterConstants.GitConfiguration.Credential.OAuthClientSecret,
+                "Bitbucket DC OAuth Client Secret must be defined");
         }
 
         private static OAuth2ServerEndpoints GetEndpoints(ISettings settings)

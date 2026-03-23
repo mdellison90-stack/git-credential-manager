@@ -23,44 +23,29 @@ namespace Atlassian.Bitbucket.Cloud
 
         private static string GetClientId(ISettings settings)
         {
-            // Check for developer override value
-            if (settings.TryGetSetting(
+            return settings.GetOAuthConfigValue(
                 CloudConstants.EnvironmentVariables.OAuthClientId,
-                Constants.GitConfiguration.Credential.SectionName, CloudConstants.GitConfiguration.Credential.OAuthClientId,
-                out string clientId))
-            {
-                return clientId;
-            }
-
-            return CloudConstants.OAuth2ClientId;
+                Constants.GitConfiguration.Credential.SectionName,
+                CloudConstants.GitConfiguration.Credential.OAuthClientId,
+                CloudConstants.OAuth2ClientId);
         }
 
         private static Uri GetRedirectUri(ISettings settings)
         {
-            // Check for developer override value
-            if (settings.TryGetSetting(
+            return settings.GetOAuthConfigUri(
                 CloudConstants.EnvironmentVariables.OAuthRedirectUri,
-                Constants.GitConfiguration.Credential.SectionName, CloudConstants.GitConfiguration.Credential.OAuthRedirectUri,
-                out string redirectUriStr) && Uri.TryCreate(redirectUriStr, UriKind.Absolute, out Uri redirectUri))
-            {
-                return redirectUri;
-            }
-
-            return CloudConstants.OAuth2RedirectUri;
+                Constants.GitConfiguration.Credential.SectionName,
+                CloudConstants.GitConfiguration.Credential.OAuthRedirectUri,
+                CloudConstants.OAuth2RedirectUri);
         }
 
         private static string GetClientSecret(ISettings settings)
         {
-            // Check for developer override value
-            if (settings.TryGetSetting(
+            return settings.GetOAuthConfigValue(
                 CloudConstants.EnvironmentVariables.OAuthClientSecret,
-                Constants.GitConfiguration.Credential.SectionName, CloudConstants.GitConfiguration.Credential.OAuthClientSecret,
-                out string clientSecret))
-            {
-                return clientSecret;
-            }
-
-            return CloudConstants.OAuth2ClientSecret;
+                Constants.GitConfiguration.Credential.SectionName,
+                CloudConstants.GitConfiguration.Credential.OAuthClientSecret,
+                CloudConstants.OAuth2ClientSecret);
         }
 
         private static OAuth2ServerEndpoints GetEndpoints()

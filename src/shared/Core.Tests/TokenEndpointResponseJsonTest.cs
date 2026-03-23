@@ -1,5 +1,6 @@
 using System;
 using System.Text.Json;
+using GitCredentialManager;
 using GitCredentialManager.Authentication.OAuth.Json;
 using Xunit;
 
@@ -17,11 +18,7 @@ public class TokenEndpointResponseJsonTest
         var scopeString = "a,b,c";
         var json = $"{{\"access_token\": \"{accessToken}\", \"token_type\": \"{tokenType}\", \"expires_in\": {expiresIn}, \"scopes\": \"{scopesString}\", \"scope\": \"{scopeString}\"}}";
 
-        var result = JsonSerializer.Deserialize<TokenEndpointResponseJson>(json,
-            new JsonSerializerOptions
-            {
-                PropertyNameCaseInsensitive = true
-            });
+        var result = JsonSerializer.Deserialize<TokenEndpointResponseJson>(json, JsonHelper.CaseInsensitiveOptions);
 
         Assert.Equal(accessToken, result.AccessToken);
         Assert.Equal(tokenType, result.TokenType);

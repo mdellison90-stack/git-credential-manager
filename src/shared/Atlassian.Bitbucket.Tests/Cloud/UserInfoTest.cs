@@ -3,6 +3,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Threading.Tasks;
 using Atlassian.Bitbucket.Cloud;
+using GitCredentialManager;
 using Xunit;
 
 namespace Atlassian.Bitbucket.Tests.Cloud
@@ -29,10 +30,7 @@ namespace Atlassian.Bitbucket.Tests.Cloud
 
             var json = $"{{\"uuid\": \"{uuid}\", \"has_2fa_enabled\": null, \"username\": \"{userName}\", \"account_id\": \"{accountId}\"}}";
 
-            var result = JsonSerializer.Deserialize<UserInfo>(json, new JsonSerializerOptions()
-            {
-                PropertyNameCaseInsensitive = true,
-            });
+            var result = JsonSerializer.Deserialize<UserInfo>(json, JsonHelper.CaseInsensitiveOptions);
 
             Assert.Equal(userName, result.UserName);
         }
