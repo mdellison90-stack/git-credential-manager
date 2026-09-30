@@ -3,12 +3,12 @@ name: "Lint documentation"
 on:
   workflow_dispatch:
   push:
-    branches: [ main, linux ]
+    branches: [ main, vnext ]
     paths:
       - '**.md'
       - '.github/workflows/lint-docs.yml'
   pull_request:
-    branches: [ main, linux ]
+    branches: [ main, vnext ]
     paths:
       - '**.md'
       - '.github/workflows/lint-docs.yml'
@@ -18,9 +18,9 @@ jobs:
     name: Lint markdown files
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
-      - uses: DavidAnson/markdownlint-cli2-action@07035fd053f7be764496c0f8d8f9f41f98305101
+      - uses: DavidAnson/markdownlint-cli2-action@21c1be1b93ad9ed58fa840aacc3f279cde2a72ff
         with:
           globs: |
             "**/*.md"
@@ -30,12 +30,12 @@ jobs:
     name: Check for broken links
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Run link checker
         # For any troubleshooting, see:
         # https://github.com/lycheeverse/lychee/blob/master/docs/TROUBLESHOOTING.md
-        uses: lycheeverse/lychee-action@a8c4c7cb88f0c7386610c35eb25108e448569cb0
+        uses: lycheeverse/lychee-action@e7477775783ea5526144ba13e8db5eec57747ce8
         with:
           # user-agent: if a user agent is not specified, some websites (e.g.
           # GitHub Docs) return HTTP errors which Lychee will interpret as

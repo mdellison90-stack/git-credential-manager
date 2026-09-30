@@ -1,0 +1,605 @@
+﻿using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Net.Http;
+using System.Text;
+using System.Threading.Tasks;
+using Atlassian.Bitbucket.Cloud;
+using GitCredentialManager;
+using GitCredentialManager.Authentication.OAuth;
+using System.Text.RegularExpressions;
+
+namespace Atlassian.Bitbucket
+{
+    public partial class BitbucketHostProvider : IHostProvider
+    {
+        private readonly ICommandContext _context;
+        private readonly IBitbucketAuthentication _bitbucketAuth;
+        private readonly IRegistry<IBitbucketRestApi> _restApiRegistry;
+        
+        private const string ChunkRegexPattern = @"^chunks=(?'count'\d+)$";
+        [GeneratedRegex(ChunkRegexPattern)]
+        private static partial Regex ChunkRegex();
+        
+        public BitbucketHostProvider(ICommandContext context)
+            : this(context, new BitbucketAuthentication(context), new BitbucketRestApiRegistry(context)) { }
+
+        public BitbucketHostProvider(ICommandContext context, IBitbucketAuthentication bitbucketAuth, IRegistry<IBitbucketRestApi> restApiRegistry)
+        {
+            EnsureArgument.NotNull(context, nameof(context));
+            EnsureArgument.NotNull(bitbucketAuth, nameof(bitbucketAuth));
+            EnsureArgument.NotNull(restApiRegistry, nameof(restApiRegistry));
+
+            _context = context;
+            _bitbucketAuth = bitbucketAuth;
+            _restApiRegistry = restApiRegistry;
+        }
+
+        #region IHostProvider
+
+        public string Id => BitbucketConstants.Id;
+
+        public string Name => BitbucketConstants.Name;
+
+        public IEnumerable<string> SupportedAuthorityIds => BitbucketAuthentication.AuthorityIds;
+
+        public bool IsSupported(GitRequest request)
+        {
+            if (request is null)
+            {
+                return false;
+            }
+
+            if (request.WwwAuth.Any(x => x.Contains("realm=\"Atlassian Bitbucket\"", StringComparison.InvariantCultureIgnoreCase)))
+            {
+                return true;
+            }
+
+            // Split port number and hostname from host request argument
+            if (!request.TryGetHostAndPort(out string hostName, out _))
+            {
+                return false;
+            }
+
+            // We do not recommend unencrypted HTTP communications to Bitbucket, but it is possible.
+            // Therefore, we report `true` here for HTTP so that we can show a helpful
+            // error message for the user in `GetCredentialAsync`.
+            return (StringComparer.OrdinalIgnoreCase.Equals(request.Protocol, "http") ||
+                    StringComparer.OrdinalIgnoreCase.Equals(request.Protocol, "https")) &&
+                    hostName.EndsWith(CloudConstants.BitbucketBaseUrlHost, StringComparison.OrdinalIgnoreCase);
+        }
+
+        public bool IsSupported(HttpResponseMessage response)
+        {
+            if (response is null)
+            {
+                return false;
+            }
+
+            // Identify Bitbucket on-prem instances from the HTTP response using the Atlassian specific header X-AREQUESTID
+            var supported = response.Headers.Contains("X-AREQUESTID");
+
+            _context.Trace.WriteLine($"Host is{(supported ? null : "n't")} supported as Bitbucket");
+
+            return supported;
+        }
+
+        public async Task<GitResponse> GetCredentialAsync(GitRequest request)
+        {
+            // We should not allow unencrypted communication and should inform the user
+            if (!_context.Settings.AllowUnsafeRemotes &&
+                StringComparer.OrdinalIgnoreCase.Equals(request.Protocol, "http") &&
+                BitbucketHelper.IsBitbucketOrg(request))
+            {
+                throw new Exception(
+                    "Unencrypted HTTP is not recommended for Bitbucket.org. " +
+                    "Ensure the repository remote URL is using HTTPS " +
+                    $"or see {Constants.HelpUrls.GcmUnsafeRemotes} about how to allow unsafe remotes.");
+            }
+
+            var authModes = await GetSupportedAuthenticationModesAsync(request);
+
+            ICredential credential = await GetStoredCredentials(request, authModes) ??
+                                     await GetRefreshedCredentials(request, authModes);
+            return new GitResponse(credential);
+        }
+
+        private async Task<ICredential> GetStoredCredentials(GitRequest request, AuthenticationModes authModes)
+        {
+            if (_context.Settings.TryGetSetting(BitbucketConstants.EnvironmentVariables.AlwaysRefreshCredentials,
+                Constants.GitConfiguration.Credential.SectionName, BitbucketConstants.GitConfiguration.Credential.AlwaysRefreshCredentials,
+                out string alwaysRefreshCredentials) && alwaysRefreshCredentials.ToBooleanyOrDefault(false))
+            {
+                _context.Trace.WriteLine("Ignore stored credentials");
+                return null;
+            }
+
+            Uri remoteUri = request.GetRemoteUri();
+            string credentialService = GetServiceName(remoteUri);
+            _context.Trace.WriteLine($"Look for existing credentials under {credentialService} ...");
+            ICredential credentials = GetCredential(credentialService, request.UserName);
+
+            if (credentials == null)
+            {
+                _context.Trace.WriteLine("No stored credentials found");
+                return null;
+            }
+
+            _context.Trace.WriteLineSecrets($"Found stored credentials: {credentials.Account}/{{0}}", new object[] { credentials.Password });
+
+            // Check credentials are still valid
+            if (!await ValidateCredentialsWork(request, credentials, authModes))
+            {
+                return null;
+            }
+
+            return credentials;
+        }
+
+        private async Task<ICredential> GetRefreshedCredentials(GitRequest request, AuthenticationModes authModes)
+        {
+            _context.Trace.WriteLine("Refresh credentials...");
+
+            // Check for presence of refresh_token entry in credential store
+            Uri remoteUri = request.GetRemoteUri();
+            var refreshTokenService = GetRefreshTokenServiceName(remoteUri);
+            
+            _context.Trace.WriteLine($"Checking for refresh token stored against user: '{request.UserName}'...");
+            // request.UserName can either be be null or the registered Bitbucket username of the user attempting the
+            // git operation.
+            // * In the case of null the CredentialStore.Get will find the *first* refresh token stored for Bitbucket in
+            // the credential store - The storing of the refresh token is stored against the resolved Bitbucket username
+            // as part of the access token validation flow (calls 2.0/user)
+            // * When request.UserName is set the refresh token must exist under the provided username in the credential
+            // store.
+            // If a refresh token is unable to be found a full OAuth authorization flow is initiated.
+            ICredential refreshToken = SupportsOAuth(authModes)
+                ? GetCredential(refreshTokenService, request.UserName)
+                : null;
+
+            if (refreshToken is null)
+            {
+                _context.Trace.WriteLine("No stored refresh token found");
+                // There is no refresh token either because this is a non-2FA enabled account (where OAuth is not
+                // required), or because we previously erased the RT.
+
+                _context.Trace.WriteLine("Prompt for credentials...");
+
+                var result = await _bitbucketAuth.GetCredentialsAsync(remoteUri, request.UserName, authModes);
+                if (result is null || result.AuthenticationMode == AuthenticationModes.None)
+                {
+                    var message = "User cancelled credential prompt";
+                    _context.Trace.WriteLine(message);
+                    throw new Exception(message);
+                }
+
+                switch (result.AuthenticationMode)
+                {
+                    case AuthenticationModes.Basic:
+                        // Return the valid credential
+                        return result.Credential;
+
+                    case AuthenticationModes.OAuth:
+                        // If the user wants to use OAuth fall through to interactive auth
+                        break;
+
+                    default:
+                        throw new ArgumentOutOfRangeException(
+                            $"Unexpected {nameof(AuthenticationModes)} returned from prompt");
+                }
+
+                // Fall through to the start of the interactive OAuth authentication flow
+            }
+            else
+            {
+                _context.Trace.WriteLineSecrets("Found stored refresh token: {0}", new object[] { refreshToken });
+
+                try
+                {
+                    return await GetOAuthCredentialsViaRefreshFlow(request, refreshToken);
+                }
+                catch (OAuth2Exception ex)
+                {
+                    var message = "Failed to refresh existing OAuth credential using refresh token";
+                    _context.Trace.WriteLine(message);
+                    _context.Trace.WriteException(ex);
+                    Trace2.WriteError(message);
+
+                    // We failed to refresh the AT using the RT; log the refresh failure and fall through to restart
+                    // the OAuth authentication flow
+                }
+            }
+
+            return await GetOAuthCredentialsViaInteractiveBrowserFlow(request);
+        }
+
+        private async Task<ICredential> GetOAuthCredentialsViaRefreshFlow(GitRequest request, ICredential refreshToken)
+        {
+            _context.Trace.WriteLine("Refreshing OAuth credentials using refresh token...");
+            OAuth2TokenResult refreshResult = await _bitbucketAuth.RefreshOAuthCredentialsAsync(request, refreshToken.Password);
+            return await ResolveCredsAndStoreRefreshToken(request, refreshResult);
+        }
+
+        private async Task<ICredential> GetOAuthCredentialsViaInteractiveBrowserFlow(GitRequest request)
+        {
+            // We failed to use the refresh token either because it didn't exist, or because the refresh token is no
+            // longer valid. Either way we must now try authenticating using OAuth interactively.
+
+            // Start OAuth authentication flow
+            _context.Trace.WriteLine("Starting OAuth authentication flow...");
+            OAuth2TokenResult oauthResult = await _bitbucketAuth.CreateOAuthCredentialsAsync(request);
+            return await ResolveCredsAndStoreRefreshToken(request, oauthResult);
+        }
+
+        private async Task<ICredential> ResolveCredsAndStoreRefreshToken(GitRequest request, OAuth2TokenResult tokenSet)
+        {
+            Uri remoteUri = request.GetRemoteUri();
+
+            var refreshTokenService = GetRefreshTokenServiceName(remoteUri);
+            // Resolve the username to authenticate the git call
+            _context.Trace.WriteLine("Resolving username for OAuth credential...");
+            string bitbucketUsername = await ResolveOAuthUserNameAsync(request, tokenSet.AccessToken);
+            _context.Trace.WriteLine($"Username for OAuth credential is '{bitbucketUsername}'");
+
+            // Store the new refresh token in the credential store against the resolved Bitbucket username
+            _context.Trace.WriteLine($"Storing new refresh token against user: '{bitbucketUsername}'...");
+            AddOrUpdateCredential(refreshTokenService, bitbucketUsername, tokenSet.RefreshToken);
+            _context.Trace.WriteLine("Refresh token was successfully stored.");
+
+            // Return the new AT as the credential
+            return new GitCredential(bitbucketUsername, tokenSet.AccessToken);
+        }
+
+        private static bool SupportsOAuth(AuthenticationModes authModes)
+        {
+            return (authModes & AuthenticationModes.OAuth) != 0;
+        }
+
+        private static bool SupportsBasicAuth(AuthenticationModes authModes)
+        {
+            return (authModes & AuthenticationModes.Basic) != 0;
+        }
+
+        public async Task<AuthenticationModes> GetSupportedAuthenticationModesAsync(GitRequest request)
+        {
+            // Check for an explicit override for supported authentication modes
+            if (_context.Settings.TryGetSetting(
+                BitbucketConstants.EnvironmentVariables.AuthenticationModes,
+                Constants.GitConfiguration.Credential.SectionName, BitbucketConstants.GitConfiguration.Credential.AuthenticationModes,
+                out string authModesStr))
+            {
+                if (Enum.TryParse(authModesStr, true, out AuthenticationModes authModes) && authModes != AuthenticationModes.None)
+                {
+                    _context.Trace.WriteLine($"Supported authentication modes override present: {authModes}");
+                    return authModes;
+                }
+                else
+                {
+                    _context.Trace.WriteLine($"Invalid value for supported authentication modes override setting: '{authModesStr}'");
+                }
+            }
+
+            // It isn't possible to detect what Bitbucket.org is expecting so return the predefined answers.
+            if (BitbucketHelper.IsBitbucketOrg(request))
+            {
+                // Bitbucket should use Basic, OAuth or manual PAT based authentication only
+                _context.Trace.WriteLine($"{request.GetRemoteUri()} is bitbucket.org - authentication schemes: '{CloudConstants.DotOrgAuthenticationModes}'");
+                return CloudConstants.DotOrgAuthenticationModes;
+            }
+
+            // For Bitbucket DC/Server the supported modes can be detected
+            _context.Trace.WriteLine($"{request.GetRemoteUri()} is Bitbucket DC - checking for supported authentication schemes...");
+
+            try
+            {
+                var authenticationMethods = await _restApiRegistry.Get(request).GetAuthenticationMethodsAsync();
+
+                var modes = AuthenticationModes.None;
+
+                if (authenticationMethods.Contains(AuthenticationMethod.BasicAuth))
+                {
+                    modes |= AuthenticationModes.Basic;
+                }
+
+                var isOauthInstalled = await _restApiRegistry.Get(request).IsOAuthInstalledAsync();
+                if (isOauthInstalled)
+                {
+                    modes |= AuthenticationModes.OAuth;
+                }
+
+                _context.Trace.WriteLine($"Bitbucket DC/Server instance supports authentication schemes: {modes}");
+                return modes;
+            }
+            catch (Exception ex)
+            {
+                var format = "Failed to query '{0}' for supported authentication schemes.";
+                var message = string.Format(format, request.GetRemoteUri());
+
+                _context.Trace.WriteLine(message);
+                _context.Trace.WriteException(ex);
+                Trace2.WriteError(message, format);
+
+                _context.Console.WriteWarning(message);
+
+                // Fall-back to offering all modes so the user is never blocked from authenticating by at least one mode
+                return AuthenticationModes.All;
+            }
+        }
+
+        public Task StoreCredentialAsync(GitRequest request)
+        {
+            // It doesn't matter if this is an OAuth access token, or the literal username & password
+            // because we store them the same way, against the same credential key in the store.
+            // The OAuth refresh token is already stored on the 'get' request.
+            Uri remoteUri = request.GetRemoteUri();
+            string service = GetServiceName(remoteUri);
+
+            _context.Trace.WriteLine("Storing credential...");
+            AddOrUpdateCredential(service, request.UserName, request.Password);
+            _context.Trace.WriteLine("Credential was successfully stored.");
+            return Task.CompletedTask;
+        }
+
+        public Task EraseCredentialAsync(GitRequest request)
+        {
+            // Erase the stored credential (which may be either the literal username & password, or
+            // the OAuth access token). We don't need to erase the OAuth refresh token because on the
+            // next 'get' request, if the RT is bad we will erase and reacquire a new one at that point.
+            Uri remoteUri = request.GetRemoteUri();
+            string service = GetServiceName(remoteUri);
+
+            _context.Trace.WriteLine("Erasing credential...");
+            if (_context.CredentialStore.Remove(service, request.UserName))
+            {
+                _context.Trace.WriteLine("Credential was successfully erased.");
+            }
+            else
+            {
+                _context.Trace.WriteLine("Credential was not erased.");
+            }
+
+            return Task.CompletedTask;
+        }
+
+        #endregion
+
+        #region Private Methods
+
+        private async Task<string> ResolveOAuthUserNameAsync(GitRequest request, string accessToken)
+        {
+            RestApiResult<IUserInfo> result = await _restApiRegistry.Get(request).GetUserInformationAsync(null, accessToken, isBearerToken: true);
+            if (result.Succeeded)
+            {
+                return result.Response.UserName;
+            }
+
+            throw new Exception(
+                $"Failed to resolve username. HTTP: {result.StatusCode}");
+        }
+
+        private async Task<string> ResolveBasicAuthUserNameAsync(GitRequest request, string username, string password)
+        {
+            RestApiResult<IUserInfo> result = await _restApiRegistry.Get(request).GetUserInformationAsync(username, password, isBearerToken: false);
+            if (result.Succeeded)
+            {
+                return result.Response.UserName;
+            }
+
+            throw new Exception(
+                $"Failed to resolve username. HTTP: {result.StatusCode}");
+        }
+
+        private async Task<bool> ValidateCredentialsWork(GitRequest request, ICredential credentials, AuthenticationModes authModes)
+        {
+            if (_context.Settings.TryGetSetting(
+                BitbucketConstants.EnvironmentVariables.ValidateStoredCredentials,
+                Constants.GitConfiguration.Credential.SectionName, BitbucketConstants.GitConfiguration.Credential.ValidateStoredCredentials,
+                out string validateStoredCredentials) && !validateStoredCredentials.ToBooleanyOrDefault(true))
+            {
+                _context.Trace.WriteLine($"Skipping validation of stored credentials due to {BitbucketConstants.GitConfiguration.Credential.ValidateStoredCredentials} = {validateStoredCredentials}");
+                return true;
+            }
+
+            if (credentials is null)
+            {
+                return false;
+            }
+
+            // TODO: ideally we'd also check if the credentials have expired based on some local metadata
+            // (once/if we get such metadata storage), and return false if they have.
+            // This would be more efficient than having to make REST API calls to check.
+            Uri remoteUri = request.GetRemoteUri();
+            _context.Trace.WriteLineSecrets($"Validate credentials ({credentials.Account}/{{0}}) are fresh for {remoteUri} ...", new object[] { credentials.Password });
+
+            // Bitbucket supports both OAuth + Basic Auth unless there is explicit GCM configuration.
+            // The credentials could be for either scheme therefore need to potentially test both possibilities.
+            if (SupportsOAuth(authModes))
+            {
+                try
+                {
+                    await ResolveOAuthUserNameAsync(request, credentials.Password);
+                    _context.Trace.WriteLine("Validated existing credentials using OAuth");
+                    return true;
+                }
+                catch (Exception ex)
+                {
+                    var message = "Failed to validate existing credentials using OAuth";
+                    _context.Trace.WriteLine(message);
+                    _context.Trace.WriteException(ex);
+                    Trace2.WriteError(message);
+                }
+            }
+
+            if (SupportsBasicAuth(authModes))
+            {
+                try
+                {
+                    await ResolveBasicAuthUserNameAsync(request, credentials.Account, credentials.Password);
+                    _context.Trace.WriteLine("Validated existing credentials using BasicAuth");
+                    return true;
+                }
+                catch (Exception ex)
+                {
+                    var message = "Failed to validate existing credentials using Basic Auth";
+                    _context.Trace.WriteLine(message);
+                    _context.Trace.WriteException(ex);
+                    Trace2.WriteError(message);
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
+        private void AddOrUpdateCredential(string service, string account, string secret)
+        {
+            if (SecretRequiresChunking(secret, out var chunkSize))
+            {
+                var chunks = secret
+                    .Chunk((int)chunkSize)
+                    .Select(x => new string(x)).ToList();
+                var chunkCount = chunks.Count;
+                _context.Trace.WriteLine(
+                    $"Storing credential of length {secret.Length} in {chunkCount} chunks of size {chunkSize} for " +
+                    $"service: {service} and account: {account}"
+                );
+                // We're storing the chunks in a separate service (nested under the provided service). This ensures that
+                // retrieving credentials for the provided service cannot trip up on the chunks when looking up with a
+                // null account.
+                var chunkService = GetChunkServiceName(service);
+                foreach (var (secretChunk, index) in chunks.Select((value, i) => (value, i)))
+                {
+                    var chunkAccount = GetChunkAccount(account, index);
+                    _context.Trace.WriteLineSecrets(
+                        $"Storing chunk for service: {chunkService} and account: {chunkAccount}: {{0}}",
+                        new object[] { secretChunk });
+                    _context.CredentialStore.AddOrUpdate(chunkService, chunkAccount, secretChunk);
+                }
+                // When using the chunking implementation we store a chunk descriptor against the account in the usual
+                // service. This allows us to identify (on get) that we've stored chunks, and the number of chunks to
+                // query.
+                _context.CredentialStore.AddOrUpdate(service, account, GetChunkSecret(chunkCount));
+            }
+            else
+            {
+                _context.Trace.WriteLine(
+                    $"Storing credential of length {(secret ?? "").Length} for service: {service} and " +
+                    $"account: {account}"
+                );
+                // In the case we only have a single chunk (which will be the case on all credential managers except
+                // `wincredman`) we can store the secret as the old code used to.
+                _context.CredentialStore.AddOrUpdate(service, account, secret);
+            }
+        }
+
+        private bool SecretRequiresDechunking(String secret, out int chunkCount)
+        {
+            var chunkSize = _context.CredentialStore.MaxCredentialSize;
+            // If the credentialStore has a valid configured chunk size, we have to support reading a chunked secret.
+            if (chunkSize > 0 && secret is not null)
+            {
+                var isChunked = ChunkRegex().Match(secret);
+                if (isChunked.Success)
+                {
+                    chunkCount = int.Parse(isChunked.Groups["count"].Value);
+                    return true;
+                }
+            }
+            // If the credentialStore does not support chunking, or the secret wasn't a chunk descriptor, we are
+            // returning null to indicate we shouldn't read using the chunking implementation
+            chunkCount = 0;
+            return false;
+        }
+        
+        private bool SecretRequiresChunking(string secret, out int chunkSize)
+        {
+            // If a secret is bigger than the credentialStore's valid configured chunk size - we have to chunk it.
+            chunkSize = _context.CredentialStore.MaxCredentialSize;
+            return chunkSize > 0 && secret?.Length > chunkSize;
+        }
+        
+        
+        private ICredential GetCredential(string service, string account)
+        {   
+            var credential = _context.CredentialStore.Get(service, account);
+            if (credential is null)
+            {
+                return null;
+            }
+            
+            if (SecretRequiresDechunking(credential.Password, out var chunkCount))
+            {
+                // We will be using the Account stored in the located credential to build the chunk identifiers and
+                // return the stitched together final Credential.
+                var credentialAccount = credential.Account;
+                _context.Trace.WriteLine(
+                    $"Found chunked credential (chunks={chunkCount}) for service: {service} and account: {account} " +
+                    $" stored against account: {credentialAccount}"
+                );
+                
+                var chunkedPasswordBuilder = new StringBuilder();
+                var chunkedService = GetChunkServiceName(service);
+                for (var index = 0; index < chunkCount; index++)
+                {  
+                    // Build the chunk identifier using the username stored in the chunk descriptor we looked up.
+                    var chunkAccount = GetChunkAccount(credentialAccount, index);
+                    var chunk = _context.CredentialStore.Get(chunkedService, chunkAccount);
+                    if (chunk == null){
+                        _context.Trace.WriteLine($"Chunk {index} was unexpectedly null");
+                        return null;
+                    }
+                    _context.Trace.WriteLineSecrets(
+                        $"Found chunk for service: {chunkedService} and account: {chunkAccount}: {{0}}", 
+                        new object[] { chunk.Password }
+                    );
+                    chunkedPasswordBuilder.Append(chunk.Password);
+                }
+                // We've stitched together all the chunks into a singular secret - return it with the original account.
+                return new GitCredential(credentialAccount, chunkedPasswordBuilder.ToString());
+            }
+            _context.Trace.WriteLine(
+                $"Found non-chunked credential for service: {service} and account: {account} stored against " +
+                $"account: {credential.Account}"
+            );
+            return credential;
+        }
+         
+        internal /* for testing */ static  string GetChunkAccount(string account, int chunkIndex)
+        {
+            return $"{account}_{chunkIndex}";
+        }
+        internal /* for testing */ static  string GetChunkSecret(int chunkCount)
+        {
+            return $"chunks={chunkCount}";
+        }
+        
+        internal /* for testing */ static  string GetChunkServiceName(string service)
+        {
+            return $"{service}/chunks";
+        }
+        
+        internal /* for testing */ static string GetServiceName(Uri remoteUri)
+        {
+            return remoteUri.WithoutUserInfo().AbsoluteUri.TrimEnd('/');
+        }
+
+        internal /* for testing */ static string GetRefreshTokenServiceName(Uri remoteUri)
+        {
+            Uri baseUri = remoteUri.WithoutUserInfo();
+
+            // The refresh token key never includes the path component.
+            // Instead we use the path component to specify this is the "refresh_token".
+            Uri uri = new UriBuilder(baseUri) { Path = "/refresh_token" }.Uri;
+
+            return uri.AbsoluteUri.TrimEnd('/');
+        }
+
+        #endregion
+
+        public void Dispose()
+        {
+            _restApiRegistry.Dispose();
+            _bitbucketAuth.Dispose();
+        }
+    }
+}

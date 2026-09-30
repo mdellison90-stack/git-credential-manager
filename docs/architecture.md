@@ -83,20 +83,25 @@ We hope to be able to migrate the WPF/Windows only helpers to [Avalonia][avaloni
 in order to gain cross-platform graphical user interface support. See
 [GCM issue 136][issue-136] for up-to-date progress on this effort.
 
-### Microsoft authentication
+### Microsoft Entra authentication
 
-For authentication using Microsoft Accounts or Azure Active Directory, things
-are a little different. The `MicrosoftAuthentication` component is present in
-the `Core` core assembly, rather than bundled with a
-specific host provider. This was done to allow any service that may wish to in
-the future integrate with Microsoft Accounts or Azure Active Directory can make
-use of this reusable authentication component.
+For authentication using Microsoft accounts or Microsoft Entra ID, things are
+a little different. The `EntraAuthentication` component is present in the
+`Core` assembly rather than bundled with a specific host provider. This allows
+services to share account selection, interactive flows, token caching, and
+workload identity support while supplying their own Entra application
+configuration.
 
 ## Asynchronous programming
 
 GCM makes use of the `async`/`await` model of .NET and C# in almost all
 parts of the codebase where appropriate as usually requests end up going to the
 network at some point.
+
+Work that must run on the process entry thread - creating UI controls, or
+using the macOS identity broker - is marshalled there by the main thread
+dispatcher. See the [main thread dispatcher][gcm-dispatcher] documentation for
+how that works and the rules for posting to it.
 
 ## Command execution
 
@@ -202,7 +207,7 @@ the input arguments from Git - `<protocol>://<host>[/<path>]` - no username is
 included even if present.
 
 Host providers are queried in turn, by priority (then registration order) via
-the `IHostProvider.IsSupported(InputArguments)` method and passed the input
+the `IHostProvider.IsSupported(GitRequest)` method and passed the input
 received from Git. If the provider recognises the request, for example by a
 matching known host name, they can return `true`. If the provider wants to
 cancel and abort an authentication request, for example if this is a HTTP (not
@@ -213,12 +218,12 @@ Host providers can also be queried via the `IHostProvider.IsSupported(HttpRespon
 method and passed the response message from a HEAD call made to the remote URI.
 This is useful for detecting on-premises instances based on header values. GCM
 will only query a provider via this method overload if no other provider at the
-same registration priority has returned `true` to the `InputArguments` overload.
+same registration priority has returned `true` to the `GitRequest` overload.
 
 Depending on the request from Git, one of `GetCredentialAsync` (for `get`
 requests), `StoreCredentialAsync` (for `store` requests) or
 `EraseCredentialAsync` (for `erase` requests) will be called. The argument
-`InputArguments` contains the request information passed over standard input
+`GitRequest` contains the request information passed over standard input
 from Git/the caller; the same as was passed to `IsSupported`.
 
 The return value for the `get` operation must be an `ICredential` that Git can
@@ -282,5 +287,6 @@ to the trace object in most places of GCM.
 [credential-provider]: configuration.md#credentialprovider
 [issue-113]: https://github.com/git-ecosystem/git-credential-manager/issues/113
 [issue-136]: https://github.com/git-ecosystem/git-credential-manager/issues/136
+[gcm-dispatcher]: dispatcher.md
 [gcm-provider]: environment.md#GCM_PROVIDER
 [msal]: https://github.com/AzureAD/microsoft-authentication-library-for-dotnet

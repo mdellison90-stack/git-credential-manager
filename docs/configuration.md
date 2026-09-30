@@ -699,28 +699,24 @@ git config --global credential.msauthFlow devicecode
 
 ---
 
-### credential.msauthUseBroker _(experimental)_
+### credential.msauthUseBroker
 
 Use the operating system account manager where available.
 
-Defaults to `false`. In certain cloud hosted environments when using a work or
-school account, such as [Microsoft DevBox][devbox], the default is `true`.
+Defaults to `true`.
 
-These defaults are subject to change in the future.
-
-_**Note:** before you enable this option on Windows, please review the
-[Windows Broker][wam] details for what this means to your local Windows user
-account._
+_**Note:** for more information about the authentication broker, please review
+the [Microsoft authentication broker][msauth-broker] information._
 
 Value|Description
 -|-
-`true`|Use the operating system account manager as an authentication broker.
-`false` _(default)_|Do not use the broker.
+`true` _(default)_|Use the operating system account manager as an authentication broker.
+`false`|Do not use the broker.
 
 #### Example
 
 ```shell
-git config --global credential.msauthUseBroker true
+git config --global credential.msauthUseBroker false
 ```
 
 **Also see: [GCM_MSAUTH_USEBROKER][gcm-msauth-usebroker]**
@@ -827,18 +823,65 @@ Credential: "git:https://bob@github.com/example/myrepo" (user = bob)
 
 ---
 
+### credential.azreposUseMicrosoftSharedCache
+
+Use the token cache shared by Microsoft developer tools when authenticating to
+Azure Repos with Microsoft identity OAuth tokens. This allows GCM to reuse
+authentication performed by tools such as Visual Studio and Azure PowerShell
+CLI, and allows those tools to reuse authentication performed by GCM.
+
+Set this value to `false` to use a GCM-specific token cache instead.
+
+Defaults to `true`.
+
+#### Example
+
+```shell
+git config --global credential.azreposUseMicrosoftSharedCache false
+```
+
+**Also see: [GCM_AZREPOS_USE_MSFT_CACHE][gcm-azrepos-shared-cache]**
+
+---
+
+### credential.azreposUseLegacyClientId
+
+Use the legacy Visual Studio Entra application when authenticating to Azure
+Repos with Microsoft identity OAuth tokens. Set this value to `true` to restore
+the application identity used by earlier versions of GCM.
+
+For recognized client application configuration failures, GCM suggests this
+option but does not retry authentication automatically. Use it as a temporary
+compatibility workaround. If retrying with the legacy application succeeds,
+please [report the original failure](https://aka.ms/gcm/bug).
+
+The legacy application does not support broker authentication on macOS or
+Linux.
+
+Defaults to `false`.
+
+#### Example
+
+Retry one Git command without persisting the setting:
+
+```shell
+git -c credential.azreposUseLegacyClientId=true fetch
+```
+
+**Also see: [GCM_AZREPOS_USE_LEGACY_CLIENTID][gcm-azrepos-legacy-client-id]**
+
+---
+
 ### credential.azreposCredentialType
 
 Specify the type of credential the Azure Repos host provider should return.
 
-Defaults to the value `pat`. In certain cloud hosted environments when using a
-work or school account, such as [Microsoft DevBox][devbox], the default value is
-`oauth`.
+Defaults to the value `oauth`.
 
 Value|Description
 -|-
 `pat`|Azure DevOps personal access tokens
-`oauth`|Microsoft identity OAuth tokens (AAD or MSA tokens)
+`oauth`|Microsoft identity OAuth tokens (Entra ID or MSA tokens)
 
 Here is more information about [Azure Access tokens][azure-tokens].
 
@@ -881,6 +924,138 @@ git config --global credential.azreposManagedIdentity "id://11111111-1111-1111-1
 ```
 
 **Also see: [GCM_AZREPOS_MANAGEDIDENTITY][gcm-azrepos-credentialmanagedidentity]**
+
+---
+
+### credential.azreposWorkloadFederation
+
+Use [Workload Identity Federation][wif] to authenticate with Azure Repos.
+
+The value specifies the federation scenario to use for obtaining a client
+assertion to exchange for an access token.
+
+You must also set the following companion settings:
+
+- [credential.azreposWorkloadFederationClientId][credential-azrepos-wif-clientid]
+- [credential.azreposWorkloadFederationTenantId][credential-azrepos-wif-tenantid]
+
+Depending on the scenario, additional settings may be required.
+
+Value|Description
+-|-
+`generic`|Use a user-supplied client assertion ([credential.azreposWorkloadFederationAssertion][credential-azrepos-wif-assertion])
+`managedidentity`|Use a [Managed Identity][managed-identity] to obtain the federated token ([credential.azreposWorkloadFederationManagedIdentity][credential-azrepos-wif-managedidentity])
+`githubactions`|Automatically obtain an OIDC token from GitHub Actions
+
+For more information about workload identity federation, see the
+[conceptual documentation][azrepos-wif-doc] and the Azure DevOps
+[documentation][azrepos-sp-mid].
+
+#### Example
+
+```shell
+git config --global credential.azreposWorkloadFederation githubactions
+```
+
+**Also see: [GCM_AZREPOS_WIF][gcm-azrepos-wif]**
+
+---
+
+### credential.azreposWorkloadFederationClientId
+
+The client ID of the app registration / service principal to request an access
+token for when using [Workload Identity Federation][wif] with
+[credential.azreposWorkloadFederation][credential-azrepos-wif].
+
+#### Example
+
+```shell
+git config --global credential.azreposWorkloadFederationClientId "11111111-1111-1111-1111-111111111111"
+```
+
+**Also see: [GCM_AZREPOS_WIF_CLIENTID][gcm-azrepos-wif-clientid]**
+
+---
+
+### credential.azreposWorkloadFederationTenantId
+
+The tenant ID of the app registration / service principal to request an access
+token for when using [Workload Identity Federation][wif] with
+[credential.azreposWorkloadFederation][credential-azrepos-wif].
+
+#### Example
+
+```shell
+git config --global credential.azreposWorkloadFederationTenantId "22222222-2222-2222-2222-222222222222"
+```
+
+**Also see: [GCM_AZREPOS_WIF_TENANTID][gcm-azrepos-wif-tenantid]**
+
+---
+
+### credential.azreposWorkloadFederationAudience
+
+The audience to use when requesting the federated token for
+[Workload Identity Federation][wif] with
+[credential.azreposWorkloadFederation][credential-azrepos-wif].
+
+Defaults to `api://AzureADTokenExchange`.
+
+#### Example
+
+```shell
+git config --global credential.azreposWorkloadFederationAudience "api://AzureADTokenExchange"
+```
+
+**Also see: [GCM_AZREPOS_WIF_AUDIENCE][gcm-azrepos-wif-audience]**
+
+---
+
+### credential.azreposWorkloadFederationAssertion
+
+Specifies the client assertion token to use with the `generic`
+[Workload Identity Federation][wif] scenario
+([credential.azreposWorkloadFederation][credential-azrepos-wif]).
+
+This setting is required when `credential.azreposWorkloadFederation` is set to
+`generic`.
+
+#### Example
+
+```shell
+git config --global credential.azreposWorkloadFederationAssertion "eyJhbGci..."
+```
+
+**Also see: [GCM_AZREPOS_WIF_ASSERTION][gcm-azrepos-wif-assertion]**
+
+---
+
+### credential.azreposWorkloadFederationManagedIdentity
+
+Specifies the [Managed Identity][managed-identity] to use to obtain a federated
+token for the `managedidentity` [Workload Identity Federation][wif] scenario
+([credential.azreposWorkloadFederation][credential-azrepos-wif]).
+
+This setting is required when `credential.azreposWorkloadFederation` is set to
+`managedidentity`.
+
+The value accepts the same formats as
+[credential.azreposManagedIdentity](#credentialazreposmanagedidentity).
+
+Value|Description
+-|-
+`system`|System-Assigned Managed Identity
+`[guid]`|User-Assigned Managed Identity with the specified client ID
+`id://[guid]`|User-Assigned Managed Identity with the specified client ID
+`resource://[guid]`|User-Assigned Managed Identity for the associated resource
+
+#### Example
+
+```shell
+git config --global credential.azreposWorkloadFederationManagedIdentity system
+```
+
+**Also see: [GCM_AZREPOS_WIF_MANAGEDIDENTITY][gcm-azrepos-wif-managedidentity]**
 
 ---
 
@@ -1047,7 +1222,15 @@ Defaults to disabled.
 [gcm-authority]: environment.md#GCM_AUTHORITY-deprecated
 [gcm-autodetect-timeout]: environment.md#GCM_AUTODETECT_TIMEOUT
 [gcm-azrepos-credentialtype]: environment.md#GCM_AZREPOS_CREDENTIALTYPE
+[gcm-azrepos-shared-cache]: environment.md#GCM_AZREPOS_USE_MSFT_CACHE
+[gcm-azrepos-legacy-client-id]: environment.md#GCM_AZREPOS_USE_LEGACY_CLIENTID
 [gcm-azrepos-credentialmanagedidentity]: environment.md#GCM_AZREPOS_MANAGEDIDENTITY
+[gcm-azrepos-wif]: environment.md#GCM_AZREPOS_WIF
+[gcm-azrepos-wif-clientid]: environment.md#GCM_AZREPOS_WIF_CLIENTID
+[gcm-azrepos-wif-tenantid]: environment.md#GCM_AZREPOS_WIF_TENANTID
+[gcm-azrepos-wif-audience]: environment.md#GCM_AZREPOS_WIF_AUDIENCE
+[gcm-azrepos-wif-assertion]: environment.md#GCM_AZREPOS_WIF_ASSERTION
+[gcm-azrepos-wif-managedidentity]: environment.md#GCM_AZREPOS_WIF_MANAGEDIDENTITY
 [gcm-bitbucket-always-refresh-credentials]: environment.md#GCM_BITBUCKET_ALWAYS_REFRESH_CREDENTIALS
 [gcm-bitbucket-authmodes]: environment.md#GCM_BITBUCKET_AUTHMODES
 [gcm-credential-cache-options]: environment.md#GCM_CREDENTIAL_CACHE_OPTIONS
@@ -1077,6 +1260,7 @@ Defaults to disabled.
 [autodetect]: autodetect.md
 [libsecret]: https://wiki.gnome.org/Projects/Libsecret
 [managed-identity]: https://docs.microsoft.com/en-us/azure/active-directory/managed-identities-azure-resources/overview
+[wif]: https://learn.microsoft.com/en-us/entra/workload-id/workload-identity-federation
 [provider-migrate]: migration.md#gcm_authority
 [cache-options]: https://git-scm.com/docs/git-credential-cache#_options
 [pass]: https://www.passwordstore.org/
@@ -1087,9 +1271,16 @@ Defaults to disabled.
 [trace2-event-env]: environment.md#GIT_TRACE2_EVENT
 [trace2-performance-docs]: https://git-scm.com/docs/api-trace2#_the_performance_format_target
 [trace2-performance-env]: environment.md#GIT_TRACE2_PERF
-[wam]: windows-broker.md
+[msauth-broker]: msauth-broker.md
 [service-principal]: https://docs.microsoft.com/en-us/azure/active-directory/develop/app-objects-and-service-principals
 [azrepos-sp-mid]: https://learn.microsoft.com/en-us/azure/devops/integrate/get-started/authentication/service-principal-managed-identity
+[azrepos-wif-doc]: azrepos-wif.md
+[credential-azrepos-wif]: #credentialazreposworkloadfederation
+[credential-azrepos-wif-clientid]: #credentialazreposworkloadfederationclientid
+[credential-azrepos-wif-tenantid]: #credentialazreposworkloadfederationtenantid
+[credential-azrepos-wif-audience]: #credentialazreposworkloadfederationaudience
+[credential-azrepos-wif-assertion]: #credentialazreposworkloadfederationassertion
+[credential-azrepos-wif-managedidentity]: #credentialazreposworkloadfederationmanagedidentity
 [credential-azrepos-sp]: #credentialazreposserviceprincipal
 [credential-azrepos-sp-secret]: #credentialazreposserviceprincipalsecret
 [credential-azrepos-sp-cert-thumbprint]: #credentialazreposserviceprincipalcertificatethumbprint

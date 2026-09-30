@@ -147,6 +147,12 @@ Bitbucket|`git config --global credential.https://example.com.provider bitbucket
 Azure DevOps|`git config --global credential.https://example.com.provider azure-repos`
 Generic|`git config --global credential.https://example.com.provider generic`
 
+### How can I use GCM on Windows 7 or 8.x?
+
+Support for Windows 7 and 8.x was dropped in GCM v3.0. If you require a GCM for
+Windows 7 or 8.x, please use the latest GCM v2.x, which is the last major
+version of GCM to support these operating systems.
+
 ### How do I fix "Could not create SSL/TLS secure channel" errors on Windows 7?
 
 This likely indicates that you don't have newer TLS versions available. Please
@@ -299,6 +305,6 @@ is not removed and is left as `manager`, the default set by Git for Windows.
 [helper-config-docs]: https://git-scm.com/docs/gitcredentials#Documentation/gitcredentials.txt-helper
 [multiple-users]: multiple-users.md
 [netconfig-http-proxy]: netconfig.md#http-proxy
-[linux-uninstall-from-src]: ./linux-fromsrc-uninstall.md
+[linux-uninstall-from-src]: ./fromsrc-uninstall.md
 [windows-server-tls]: https://docs.microsoft.com/previous-versions/windows/it-pro/windows-server-2012-R2-and-2012/dn786418(v=ws.11)#tls-12
 [wsl]: wsl.md

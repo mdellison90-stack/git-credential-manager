@@ -1,0 +1,75 @@
+namespace Microsoft.AzureRepos
+{
+    internal static class AzureDevOpsConstants
+    {
+        // AAD environment authority base URL
+        public const string AadAuthorityBaseUrl = "https://login.microsoftonline.com";
+
+        // Azure DevOps's app ID + default scopes
+        public const string AzureDevOpsResourceId = "499b84ac-1321-427f-aa17-267ca6975798";
+        public static readonly string[] AzureDevOpsDefaultScopes = {$"{AzureDevOpsResourceId}/.default"};
+
+        // The GCM first party application client ID
+        public const string ClientId = "d735b71b-9eee-4a4f-ad23-421660877ba6";
+
+        // Visual Studio's client ID
+        public const string LegacyClientId = "872cd9fa-d31f-45e0-9eab-6e460a02d1f1";
+
+        public const string VstsHostSuffix = ".visualstudio.com";
+        public const string AzureDevOpsHost = "dev.azure.com";
+
+        public const string VssResourceTenantHeader = "X-VSS-ResourceTenant";
+
+        public const string PatCredentialType = "pat";
+        public const string OAuthCredentialType = "oauth";
+
+        public const string UrnScheme = "azrepos";
+        public const string UrnOrgPrefix = "org";
+
+        public static class PersonalAccessTokenScopes
+        {
+            public const string ReposWrite = "vso.code_write";
+            public const string ArtifactsRead = "vso.packaging";
+        }
+
+        public static class EnvironmentVariables
+        {
+            public const string UseSharedCache = "GCM_AZREPOS_USE_MSFT_CACHE";
+            public const string UseLegacyClientId = "GCM_AZREPOS_USE_LEGACY_CLIENTID";
+            public const string CredentialType = "GCM_AZREPOS_CREDENTIALTYPE";
+            public const string ServicePrincipalId = "GCM_AZREPOS_SERVICE_PRINCIPAL";
+            public const string ServicePrincipalSecret = "GCM_AZREPOS_SP_SECRET";
+            public const string ServicePrincipalCertificateThumbprint = "GCM_AZREPOS_SP_CERT_THUMBPRINT";
+            public const string ServicePrincipalCertificateSendX5C = "GCM_AZREPOS_SP_CERT_SEND_X5C";
+            public const string ManagedIdentity = "GCM_AZREPOS_MANAGEDIDENTITY";
+            public const string WorkloadFederation = "GCM_AZREPOS_WIF";
+            public const string WorkloadFederationClientId = "GCM_AZREPOS_WIF_CLIENTID";
+            public const string WorkloadFederationTenantId = "GCM_AZREPOS_WIF_TENANTID";
+            public const string WorkloadFederationAudience = "GCM_AZREPOS_WIF_AUDIENCE";
+            public const string WorkloadFederationAssertion = "GCM_AZREPOS_WIF_ASSERTION";
+            public const string WorkloadFederationManagedIdentity = "GCM_AZREPOS_WIF_MANAGEDIDENTITY";
+        }
+
+        public static class GitConfiguration
+        {
+            public static class Credential
+            {
+                public const string UseSharedCache = "azreposUseMicrosoftSharedCache";
+                public const string UseLegacyClientId = "azreposUseLegacyClientId";
+                public const string CredentialType = "azreposCredentialType";
+                public const string AzureAuthority = "azureAuthority";
+                public const string ServicePrincipal = "azreposServicePrincipal";
+                public const string ServicePrincipalSecret = "azreposServicePrincipalSecret";
+                public const string ServicePrincipalCertificateThumbprint = "azreposServicePrincipalCertificateThumbprint";
+                public const string ServicePrincipalCertificateSendX5C = "azreposServicePrincipalCertificateSendX5C";
+                public const string ManagedIdentity = "azreposManagedIdentity";
+                public const string WorkloadFederation = "azreposWorkloadFederation";
+                public const string WorkloadFederationClientId = "azreposWorkloadFederationClientId";
+                public const string WorkloadFederationTenantId = "azreposWorkloadFederationTenantId";
+                public const string WorkloadFederationAudience = "azreposWorkloadFederationAudience";
+                public const string WorkloadFederationAssertion = "azreposWorkloadFederationAssertion";
+                public const string WorkloadFederationManagedIdentity = "azreposWorkloadFederationManagedIdentity";
+            }
+        }
+    }
+}
