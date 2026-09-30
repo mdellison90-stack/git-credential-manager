@@ -1,0 +1,562 @@
+using System;
+using System.Threading.Tasks;
+using System.Collections.Generic;
+using System.IO;
+using System.Net.Http;
+using System.Text;
+using System.Threading;
+using GitCredentialManager;
+using GitCredentialManager.Authentication;
+using GitCredentialManager.Authentication.OAuth;
+using GitCredentialManager.Tty;
+using GitCredentialManager.UI;
+using GitHub.UI.ViewModels;
+using GitHub.UI.Views;
+using Spectre.Console;
+
+namespace GitHub
+{
+    public interface IGitHubAuthentication : IDisposable
+    {
+        Task<string> SelectAccountAsync(Uri targetUri, IEnumerable<string> accounts);
+
+        Task<AuthenticationPromptResult> GetAuthenticationAsync(Uri targetUri, string userName, AuthenticationModes modes);
+
+        Task<string> GetTwoFactorCodeAsync(Uri targetUri, bool isSms);
+
+        Task<OAuth2TokenResult> GetOAuthTokenViaBrowserAsync(Uri targetUri, IEnumerable<string> scopes, string loginHint);
+
+        Task<OAuth2TokenResult> GetOAuthTokenViaDeviceCodeAsync(Uri targetUri, IEnumerable<string> scopes);
+    }
+
+    public class AuthenticationPromptResult
+    {
+        public AuthenticationPromptResult(AuthenticationModes mode)
+        {
+            AuthenticationMode = mode;
+        }
+
+        public AuthenticationPromptResult(AuthenticationModes mode, ICredential credential)
+            : this(mode)
+        {
+            Credential = credential;
+        }
+
+        public AuthenticationModes AuthenticationMode { get; }
+
+        public ICredential Credential { get; set; }
+    }
+
+    [Flags]
+    public enum AuthenticationModes
+    {
+        None  = 0,
+        Basic = 1,
+        Browser = 1 << 1,
+        Pat     = 1 << 2,
+        Device  = 1 << 3,
+
+        OAuth = Browser | Device,
+        All   = Basic | OAuth | Pat
+    }
+
+    public class GitHubAuthentication : AuthenticationBase, IGitHubAuthentication
+    {
+        public static readonly string[] AuthorityIds =
+        {
+            "github",
+        };
+
+        public GitHubAuthentication(ICommandContext context)
+            : base(context) {}
+
+        public async Task<string> SelectAccountAsync(Uri targetUri, IEnumerable<string> accounts)
+        {
+            using var _ = Trace2.StartRegion("github", "select_account");
+            ThrowIfUserInteractionDisabled();
+
+            if (Context.Settings.IsGuiPromptsEnabled && Context.SessionManager.IsDesktopSession)
+            {
+                if (TryFindHelperCommand(out string command, out string args))
+                {
+                    var promptArgs = new StringBuilder(args);
+                    promptArgs.Append("select-account");
+
+                    if (!GitHubHostProvider.IsGitHubDotCom(targetUri))
+                    {
+                        promptArgs.AppendFormat(" --enterprise-url {0}", QuoteCmdArg(targetUri.ToString()));
+                    }
+
+                    // Write the accounts to the standard input of the helper process to avoid any issues
+                    // with escaping special characters, and to avoid max argument length problems.
+                    byte[] bytes = Encoding.UTF8.GetBytes(string.Join("\n", accounts));
+                    using var ms = new MemoryStream(bytes);
+                    using var stdin = new StreamReader(ms);
+
+                    IDictionary<string, string> resultDict = await InvokeHelperAsync(command, promptArgs.ToString(), stdin);
+
+                    if (!resultDict.TryGetValue("account", out string selectedAccount))
+                    {
+                        throw new Exception("Missing 'account' in response");
+                    }
+
+                    return string.IsNullOrWhiteSpace(selectedAccount) ? null : selectedAccount;
+                }
+
+                var viewModel = new SelectAccountViewModel(Context.SessionManager, accounts);
+
+                if (!GitHubHostProvider.IsGitHubDotCom(targetUri))
+                {
+                    viewModel.EnterpriseUrl = targetUri.ToString();
+                }
+
+                await AvaloniaUi.ShowViewAsync<SelectAccountView>(viewModel, GetParentWindowHandle(), CancellationToken.None);
+
+                ThrowIfWindowCancelled(viewModel);
+
+                return viewModel.SelectedAccount?.UserName;
+            }
+
+            ThrowIfTerminalPromptsDisabled();
+            var promptTitle = $"Select an account for '{targetUri}'";
+            var prompt = new SelectionPrompt<(string label, string username)>()
+                .Title(promptTitle)
+                .AddCancelResult(() => throw new OperationCanceledException("User cancelled the prompt"))
+                .UseConverter(x => x.label ?? x.username)
+                .AddChoices(("Add a new account", null));
+
+            foreach (string account in accounts)
+            {
+                prompt.AddChoices((account, account));
+            }
+
+            var choice = await Context.Console.ShowPromptAsync(prompt, CancellationToken.None);
+            return choice.username;
+        }
+
+        public async Task<AuthenticationPromptResult> GetAuthenticationAsync(Uri targetUri, string userName, AuthenticationModes modes)
+        {
+            using var _ = Trace2.StartRegion("github", "get_auth");
+            Trace2.WriteData("github", "modes/initial", modes.ToString());
+
+            // If we cannot start a browser then don't offer the option
+            if (!Context.SessionManager.IsWebBrowserAvailable)
+            {
+                modes = modes & ~AuthenticationModes.Browser;
+            }
+
+            Trace2.WriteData("github", "modes/available", modes.ToString());
+
+            // We need at least one mode!
+            if (modes == AuthenticationModes.None)
+            {
+                throw new ArgumentException(@$"Must specify at least one {nameof(AuthenticationModes)}", nameof(modes));
+            }
+
+            // If there is no mode choice to be made and no interaction required,
+            // just return that result.
+            if (modes == AuthenticationModes.Browser ||
+                modes == AuthenticationModes.Device)
+            {
+                return new AuthenticationPromptResult(modes);
+            }
+
+            ThrowIfUserInteractionDisabled();
+
+            if (Context.Settings.IsGuiPromptsEnabled && Context.SessionManager.IsDesktopSession)
+            {
+                if (TryFindHelperCommand(out string command, out string args))
+                {
+                    return await GetAuthenticationViaHelperAsync(targetUri, userName, modes, command, args);
+                }
+
+                return await GetAuthenticationViaUiAsync(targetUri, userName, modes);
+            }
+
+            return await GetAuthenticationViaTtyAsync(targetUri, userName, modes);
+        }
+
+        private async Task<AuthenticationPromptResult> GetAuthenticationViaUiAsync(
+            Uri targetUri, string userName, AuthenticationModes modes)
+        {
+            var viewModel = new CredentialsViewModel(Context.SessionManager, Context.ProcessManager)
+            {
+                ShowBrowserLogin = (modes & AuthenticationModes.Browser) != 0,
+                ShowDeviceLogin  = (modes & AuthenticationModes.Device) != 0,
+                ShowTokenLogin   = (modes & AuthenticationModes.Pat) != 0,
+                ShowBasicLogin   = (modes & AuthenticationModes.Basic) != 0,
+            };
+
+            if (!GitHubHostProvider.IsGitHubDotCom(targetUri))
+            {
+                viewModel.EnterpriseUrl = targetUri.ToString();
+            }
+
+            if (!string.IsNullOrWhiteSpace(userName))
+            {
+                viewModel.UserName = userName;
+            }
+
+            await AvaloniaUi.ShowViewAsync<CredentialsView>(viewModel, GetParentWindowHandle(), CancellationToken.None);
+
+            ThrowIfWindowCancelled(viewModel);
+
+            switch (viewModel.SelectedMode)
+            {
+                case AuthenticationModes.Basic:
+                    return new AuthenticationPromptResult(
+                        AuthenticationModes.Basic,
+                        new GitCredential(viewModel.UserName, viewModel.Password)
+                    );
+
+                case AuthenticationModes.Browser:
+                    return new AuthenticationPromptResult(AuthenticationModes.Browser);
+
+                case AuthenticationModes.Device:
+                    return new AuthenticationPromptResult(AuthenticationModes.Device);
+
+                case AuthenticationModes.Pat:
+                    return new AuthenticationPromptResult(
+                        AuthenticationModes.Pat,
+                        new GitCredential(userName, viewModel.Token)
+                    );
+
+                default:
+                    throw new ArgumentOutOfRangeException();
+            }
+        }
+
+        private async Task<AuthenticationPromptResult> GetAuthenticationViaTtyAsync(Uri targetUri, string userName, AuthenticationModes modes)
+        {
+            ThrowIfTerminalPromptsDisabled();
+
+            switch (modes)
+            {
+                case AuthenticationModes.Basic:
+                    Context.Console.WriteLine($"Enter GitHub credentials for '{targetUri}'...");
+
+                    if (string.IsNullOrWhiteSpace(userName))
+                    {
+                        userName = await TerminalPrompts.CreateText("Username").ShowAsync(Context.Console);
+                    }
+                    else
+                    {
+                        Context.Console.WriteLine($"Username: {userName}");
+                    }
+
+                    string password = await TerminalPrompts.CreateSecret("Password").ShowAsync(Context.Console);
+
+                    return new AuthenticationPromptResult(
+                        AuthenticationModes.Basic, new GitCredential(userName, password));
+
+                case AuthenticationModes.Browser:
+                    return new AuthenticationPromptResult(AuthenticationModes.Browser);
+
+                case AuthenticationModes.Device:
+                    return new AuthenticationPromptResult(AuthenticationModes.Device);
+
+                case AuthenticationModes.Pat:
+                    Context.Console.WriteLine($"Enter GitHub personal access token for '{targetUri}'...");
+                    string pat = await TerminalPrompts.CreateSecret("Token").ShowAsync(Context.Console);
+                    return new AuthenticationPromptResult(
+                        AuthenticationModes.Pat, new GitCredential(userName, pat));
+
+                case AuthenticationModes.None:
+                    throw new ArgumentOutOfRangeException(nameof(modes),
+                        @$"At least one {nameof(AuthenticationModes)} must be supplied");
+
+                default:
+                    var promptTitle = $"Select an authentication method for '{targetUri}'";
+                    var prompt = TerminalPrompts.CreateSelection<AuthenticationModes>()
+                        .Title(promptTitle);
+
+                    if ((modes & AuthenticationModes.Browser) != 0) prompt.AddChoice("Web browser", AuthenticationModes.Browser);
+                    if ((modes & AuthenticationModes.Device) != 0) prompt.AddChoice("Device code", AuthenticationModes.Device);
+                    if ((modes & AuthenticationModes.Pat) != 0) prompt.AddChoice("Personal access token", AuthenticationModes.Pat);
+                    if ((modes & AuthenticationModes.Basic) != 0) prompt.AddChoice("Username/password", AuthenticationModes.Basic);
+
+                    // Default to the 'first' choice in the menu
+                    AuthenticationModes choice = await prompt.ShowAsync(Context.Console, CancellationToken.None);
+
+                    if (choice == AuthenticationModes.Browser) goto case AuthenticationModes.Browser;
+                    if (choice == AuthenticationModes.Device) goto case AuthenticationModes.Device;
+                    if (choice == AuthenticationModes.Basic) goto case AuthenticationModes.Basic;
+                    if (choice == AuthenticationModes.Pat) goto case AuthenticationModes.Pat;
+
+                    throw new Exception();
+            }
+        }
+
+        private async Task<AuthenticationPromptResult> GetAuthenticationViaHelperAsync(
+            Uri targetUri, string userName, AuthenticationModes modes, string command, string args)
+        {
+            var promptArgs = new StringBuilder(args);
+            promptArgs.Append("prompt");
+            if (modes == AuthenticationModes.All)
+            {
+                promptArgs.Append(" --all");
+            }
+            else
+            {
+                if ((modes & AuthenticationModes.Basic) != 0) promptArgs.Append(" --basic");
+                if ((modes & AuthenticationModes.Browser) != 0) promptArgs.Append(" --browser");
+                if ((modes & AuthenticationModes.Device) != 0) promptArgs.Append(" --device");
+                if ((modes & AuthenticationModes.Pat) != 0) promptArgs.Append(" --pat");
+            }
+
+            if (!GitHubHostProvider.IsGitHubDotCom(targetUri))
+                promptArgs.AppendFormat(" --enterprise-url {0}", QuoteCmdArg(targetUri.ToString()));
+            if (!string.IsNullOrWhiteSpace(userName)) promptArgs.AppendFormat(" --username {0}", QuoteCmdArg(userName));
+
+            IDictionary<string, string> resultDict = await InvokeHelperAsync(command, promptArgs.ToString(), null);
+
+            if (!resultDict.TryGetValue("mode", out string responseMode))
+            {
+                throw new Exception("Missing 'mode' in response");
+            }
+
+            switch (responseMode.ToLowerInvariant())
+            {
+                case "pat":
+                    if (!resultDict.TryGetValue("pat", out string pat))
+                    {
+                        throw new Exception("Missing 'pat' in response");
+                    }
+
+                    return new AuthenticationPromptResult(
+                        AuthenticationModes.Pat, new GitCredential(userName, pat));
+
+                case "browser":
+                    return new AuthenticationPromptResult(AuthenticationModes.Browser);
+
+                case "device":
+                    return new AuthenticationPromptResult(AuthenticationModes.Device);
+
+                case "basic":
+                    if (!resultDict.TryGetValue("username", out userName))
+                    {
+                        throw new Exception("Missing 'username' in response");
+                    }
+
+                    if (!resultDict.TryGetValue("password", out string password))
+                    {
+                        throw new Exception("Missing 'password' in response");
+                    }
+
+                    return new AuthenticationPromptResult(
+                        AuthenticationModes.Basic, new GitCredential(userName, password));
+
+                default:
+                    throw new Exception(
+                        $"Unknown mode value in response '{responseMode}'");
+            }
+        }
+
+        public async Task<string> GetTwoFactorCodeAsync(Uri targetUri, bool isSms)
+        {
+            using var _ = Trace2.StartRegion("github", "get_tfa");
+
+            ThrowIfUserInteractionDisabled();
+
+            if (Context.Settings.IsGuiPromptsEnabled && Context.SessionManager.IsDesktopSession)
+            {
+                if (TryFindHelperCommand(out string command, out string args))
+                {
+                    return await GetTwoFactorCodeViaHelperAsync(isSms, args, command);
+                }
+
+                return await GetTwoFactorCodeViaUiAsync(targetUri, isSms);
+            }
+
+            return await GetTwoFactorCodeViaTtyAsync(isSms);
+        }
+
+        private async Task<string> GetTwoFactorCodeViaUiAsync(Uri targetUri, bool isSms)
+        {
+            var viewModel = new TwoFactorViewModel(Context.SessionManager, Context.ProcessManager)
+            {
+                IsSms = isSms
+            };
+
+            await AvaloniaUi.ShowViewAsync<TwoFactorView>(viewModel, GetParentWindowHandle(), CancellationToken.None);
+            
+            ThrowIfWindowCancelled(viewModel);
+
+            return viewModel.Code;
+        }
+
+        private async Task<string> GetTwoFactorCodeViaTtyAsync(bool isSms)
+        {
+            ThrowIfTerminalPromptsDisabled();
+
+            Context.Console.WriteLine("Two-factor authentication is enabled and an authentication code is required.");
+
+            Context.Console.WriteLine(isSms
+                ? "An SMS containing the authentication code has been sent to your registered device."
+                : "Use your registered authentication app to generate an authentication code.");
+
+            return await TerminalPrompts.CreateText("Authentication code").ShowAsync(Context.Console);
+        }
+
+        private async Task<string> GetTwoFactorCodeViaHelperAsync(bool isSms, string args, string command)
+        {
+            var promptArgs = new StringBuilder(args);
+            promptArgs.Append("2fa");
+            if (isSms) promptArgs.Append(" --sms");
+
+            IDictionary<string, string> resultDict = await InvokeHelperAsync(command, promptArgs.ToString(), null);
+
+            if (!resultDict.TryGetValue("code", out string authCode))
+            {
+                throw new Exception("Missing 'code' in response");
+            }
+
+            return authCode;
+        }
+
+        public async Task<OAuth2TokenResult> GetOAuthTokenViaBrowserAsync(Uri targetUri, IEnumerable<string> scopes, string loginHint)
+        {
+            using var _ = Trace2.StartRegion("github", "oauth_browser");
+
+            ThrowIfUserInteractionDisabled();
+
+            var oauthClient = new GitHubOAuth2Client(HttpClient, Context.Settings, targetUri);
+
+            // Can we launch the user's default web browser?
+            if (!Context.SessionManager.IsWebBrowserAvailable)
+            {
+                throw new InvalidOperationException(
+                    "Browser authentication requires a desktop session");
+            }
+
+            var browserOptions = new OAuth2WebBrowserOptions
+            {
+                SuccessResponseHtml = GitHubResources.AuthenticationResponseSuccessHtml,
+                FailureResponseHtmlFormat = GitHubResources.AuthenticationResponseFailureHtmlFormat
+            };
+            var browser = new OAuth2SystemWebBrowser(Context.SessionManager, browserOptions);
+
+            // If we have a login hint we should pass this to GitHub as an extra query parameter
+            IDictionary<string, string> queryParams = null;
+            if (loginHint != null)
+            {
+                queryParams = new Dictionary<string, string>
+                {
+                    ["login"] = loginHint
+                };
+            }
+
+            // Write message to the terminal (if any is attached) for some feedback that we're waiting for a web response
+            Context.Console.WriteInfo("please complete authentication in your browser...");
+
+            OAuth2AuthorizationCodeResult authCodeResult =
+                await oauthClient.GetAuthorizationCodeAsync(scopes, browser, queryParams, CancellationToken.None);
+
+            return await oauthClient.GetTokenByAuthorizationCodeAsync(authCodeResult, CancellationToken.None);
+        }
+
+        public async Task<OAuth2TokenResult> GetOAuthTokenViaDeviceCodeAsync(Uri targetUri, IEnumerable<string> scopes)
+        {
+            using var _ = Trace2.StartRegion("github", "oauth_device_code");
+
+            ThrowIfUserInteractionDisabled();
+
+            var oauthClient = new GitHubOAuth2Client(HttpClient, Context.Settings, targetUri);
+            OAuth2DeviceCodeResult dcr = await oauthClient.GetDeviceCodeAsync(scopes, CancellationToken.None);
+
+            // If we have a desktop session show the device code in a dialog
+            if (Context.Settings.IsGuiPromptsEnabled && Context.SessionManager.IsDesktopSession)
+            {
+                var promptCts = new CancellationTokenSource();
+                var tokenCts = new CancellationTokenSource();
+
+                // Show the dialog with the device code but don't await its closure
+                Task promptTask = TryFindHelperCommand(out string command, out string args)
+                    ? ShowDeviceCodeViaHelperAsync(dcr, command, args, promptCts.Token)
+                    : ShowDeviceCodeViaUiAsync(dcr, promptCts.Token);
+
+                // Start the request for an OAuth token but don't wait
+                Task<OAuth2TokenResult> tokenTask = oauthClient.GetTokenByDeviceCodeAsync(dcr, tokenCts.Token);
+
+                Task t = await Task.WhenAny(promptTask, tokenTask);
+
+                // If the dialog was closed the user wishes to cancel the request
+                if (t == promptTask)
+                {
+                    tokenCts.Cancel();
+                }
+
+                OAuth2TokenResult tokenResult;
+                try
+                {
+                    tokenResult = await tokenTask;
+                }
+                catch (OperationCanceledException)
+                {
+                    throw new InvalidOperationException(
+                        "User canceled device code authentication");
+                }
+
+                // Close the dialog
+                promptCts.Cancel();
+
+                return tokenResult;
+            }
+
+            return await GetOAuthTokenViaDeviceCodeViaTtyAsync(oauthClient, dcr);
+        }
+
+        private Task ShowDeviceCodeViaUiAsync(OAuth2DeviceCodeResult dcr, CancellationToken ct)
+        {
+            var viewModel = new DeviceCodeViewModel(Context.SessionManager)
+            {
+                UserCode = dcr.UserCode,
+                VerificationUrl = dcr.VerificationUri.ToString(),
+            };
+
+            return AvaloniaUi.ShowViewAsync<DeviceCodeView>(viewModel, GetParentWindowHandle(), ct);
+        }
+
+        private async Task<OAuth2TokenResult> GetOAuthTokenViaDeviceCodeViaTtyAsync(GitHubOAuth2Client oauthClient, OAuth2DeviceCodeResult dcr)
+        {
+            ThrowIfTerminalPromptsDisabled();
+
+            string deviceMessage =
+                $"To complete authentication please visit {dcr.VerificationUri} and enter the following code:" +
+                Environment.NewLine +
+                dcr.UserCode;
+            Context.Console.WriteLine(deviceMessage);
+
+            return await oauthClient.GetTokenByDeviceCodeAsync(dcr, CancellationToken.None);
+        }
+
+        private Task ShowDeviceCodeViaHelperAsync(
+            OAuth2DeviceCodeResult dcr, string command, string args, CancellationToken ct)
+        {
+            var promptArgs = new StringBuilder(args);
+            promptArgs.Append("device");
+            promptArgs.AppendFormat(" --code {0} ", QuoteCmdArg(dcr.UserCode));
+            promptArgs.AppendFormat(" --url {0}", QuoteCmdArg(dcr.VerificationUri.ToString()));
+
+            return InvokeHelperAsync(command, promptArgs.ToString(), null, ct);
+        }
+
+        private bool TryFindHelperCommand(out string command, out string args)
+        {
+            return TryFindHelperCommand(
+                GitHubConstants.EnvironmentVariables.AuthenticationHelper,
+                GitHubConstants.GitConfiguration.Credential.AuthenticationHelper,
+                GitHubConstants.DefaultAuthenticationHelper,
+                out command,
+                out args);
+        }
+
+        private HttpClient _httpClient;
+        private HttpClient HttpClient => _httpClient ?? (_httpClient = Context.HttpClientFactory.CreateClient());
+
+        public void Dispose()
+        {
+            _httpClient?.Dispose();
+        }
+    }
+}

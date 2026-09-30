@@ -5,6 +5,11 @@ on:
   push:
     branches:
       - main
+      - vnext
+  pull_request:
+    branches:
+      - main
+      - vnext
 
 jobs:
   docker:
@@ -15,7 +20,7 @@ jobs:
       matrix:
         vector:
         - image: ubuntu
-        - image: debian:bullseye
+        - image: debian:bookworm
         - image: fedora
         # Centos no longer officially maintains images on Docker Hub. However,
         # tgagor is a contributor who pushes updated images weekly, which should
@@ -29,6 +34,7 @@ jobs:
         - image: registry.suse.com/suse/sle15:15.4.27.11.31
         - image: archlinux
         - image: mcr.microsoft.com/cbl-mariner/base/core:2.0
+        - image: mcr.microsoft.com/azurelinux/base/core:3.0
     container: ${{matrix.vector.image}}
     steps:
       - run: |
@@ -36,13 +42,21 @@ jobs:
             zypper -n install tar gzip
           elif [[ ${{matrix.vector.image}} == *"centos"* ]]; then
             dnf install which -y
-          elif [[ ${{matrix.vector.image}} == *"mariner"* ]]; then
+          elif [[ ${{matrix.vector.image}} == *"mariner"* || ${{matrix.vector.image}} == *"azurelinux"* ]]; then
             GNUPGHOME=/root/.gnupg tdnf update -y &&
             GNUPGHOME=/root/.gnupg tdnf install tar -y # needed for `actions/checkout`
           fi
-
-      - uses: actions/checkout@v6
-
+      - uses: actions/checkout@v7
       - run: |
-          sh "${GITHUB_WORKSPACE}/src/linux/Packaging.Linux/install-from-source.sh" -y
+          sh "${GITHUB_WORKSPACE}/build/install-from-source.sh" -y
+          git-credential-manager --help || exit 1
+
+  macos:
+    name: macos-latest
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: |
+          sh "${GITHUB_WORKSPACE}/build/install-from-source.sh" -y
+          export PATH="/usr/local/bin:$PATH"
           git-credential-manager --help || exit 1

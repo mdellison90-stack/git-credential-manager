@@ -3,16 +3,24 @@
   <!-- This is the root Directory.Build.targets file -->
 
   <!-- Load custom build tasks -->
-  <Import Project="$(RepoPath)build\GCM.tasks" />
+  <Import Project="$(RepoPath)build\msbuild\gcm.tasks" />
 
   <!-- Use version specified in VERSION file -->
   <Target Name="GetVersion" BeforeTargets="BeforeBuild;GenerateWindowsAppManifest">
-    <GetVersion VersionFile="$(RepoPath)VERSION">
+    <GetVersion VersionFile="$(RepoPath)VERSION" VersionOverride="$(VersionOverride)">
       <Output TaskParameter="Version" PropertyName="Version" />
       <Output TaskParameter="AssemblyVersion" PropertyName="AssemblyVersion" />
       <Output TaskParameter="FileVersion" PropertyName="FileVersion" />
     </GetVersion>
   </Target>
+
+  <!-- Suppress the "This call site is reachable on all platforms" warning
+       for all test projects - we use custom Xunit attributes to dynamically
+       skip OS-specific tests unless the test is running on the appropriate OS.
+       The analyzer for CA1416 does not know how to handle this. -->
+  <PropertyGroup Condition="'$(IsTestProject)' == 'true'">
+    <NoWarn>$(NoWarn);CA1416</NoWarn>
+  </PropertyGroup>
 
   <!-- Windows application manifest generation -->
   <PropertyGroup Condition="'$(GenerateWindowsAppManifest)' != 'false'">
@@ -21,7 +29,7 @@
 
   <!-- Generate the manifest file before we set the win32 manifest properties -->
   <Target Name="GenerateWindowsAppManifest"
-		  AfterTargets="GetVersion"
+          AfterTargets="GetVersion"
           BeforeTargets="SetWin32ManifestProperties"
           Condition="'$(GenerateWindowsAppManifest)' != 'false'"
           Inputs="$(FileVersion);$(AssemblyName)"
