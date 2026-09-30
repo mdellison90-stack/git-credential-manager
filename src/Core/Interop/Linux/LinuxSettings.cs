@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Runtime.Versioning;
 using System.Text;
 
@@ -16,7 +17,7 @@ public class LinuxSettings : Settings
 
     /// <summary>
     /// Reads settings from Git configuration, environment variables, and defaults from the
-    /// /etc/git-credential-manager.d app configuration directory.
+    /// /etc/git-credential-manager/config.d app configuration directory.
     /// </summary>
     public LinuxSettings(IEnvironment environment, IGit git, ITrace trace, IFileSystem fs)
         : base(environment, git)
@@ -67,8 +68,8 @@ public class LinuxSettings : Settings
                 return null;
             }
 
-            // Get all the files in the configuration directory
-            IEnumerable<string> files = _fs.EnumerateFiles(configDir, "*");
+            // Get all the files in the configuration directory and sort them alphabetically
+            IEnumerable<string> files = _fs.EnumerateFiles(configDir, "*").OrderBy(f => Path.GetFileName(f));
 
             // Read the contents of each file and concatenate them together
             var combinedFile = new StringBuilder();

@@ -188,6 +188,7 @@ When using GitHub logos, please be sure to follow the
 [github-ssh]: https://help.github.com/en/articles/connecting-to-github-with-ssh
 [github-logos]: https://github.com/logos
 [install]: docs/install.md
+[ms-package-repos]: https://packages.microsoft.com/repos/
 [maint-v2]: https://github.com/git-ecosystem/git-credential-manager/tree/maint-v2
 [releases-v2]: https://github.com/git-ecosystem/git-credential-manager/tree/releases/v2
 [roadmap]: https://github.com/git-ecosystem/git-credential-manager/milestones?direction=desc&sort=due_date&state=open
