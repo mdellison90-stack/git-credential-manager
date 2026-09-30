@@ -181,7 +181,6 @@ When using GitHub logos, please be sure to follow the
 [gcm-http-proxy]: docs/netconfig.md#http-proxy
 [gcm-license]: LICENSE
 [gcm-usage]: docs/usage.md
-[gcm-windows-broker]: docs/windows-broker.md
 [gcm-wsl]: docs/wsl.md
 [gcm-broker]: docs/msauth-broker.md
 [git-tools-credential-storage]: https://git-scm.com/book/en/v2/Git-Tools-Credential-Storage
