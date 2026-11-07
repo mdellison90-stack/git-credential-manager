@@ -117,7 +117,6 @@ namespace Atlassian.Bitbucket.Tests
             }
             MockStoredAccount(context, input, password);
             MockRemoteBasicValid(input, password);
-            // HACK rebase MockRemoteBasicAuthAccountIsValidNo2FA(bitbucketApi, input, password, username);
 
             var provider = new BitbucketHostProvider(context, bitbucketAuthentication.Object, MockRestApiRegistry(input, bitbucketApi).Object);
 
@@ -126,9 +125,8 @@ namespace Atlassian.Bitbucket.Tests
             Assert.Equal(username, credential.Account);
             Assert.Equal(password, credential.Password);
 
-            // Verify bitbucket.org credentials were validated
-                VerifyValidateBasicAuthCredentialsRan(input, password);
-                // Verify DC/Server credentials were not validated
+            // Verify stored credentials were validated.
+            VerifyValidateBasicAuthCredentialsRan(input, password);
 
             // Stored credentials so don't ask for more
             VerifyInteractiveAuthNeverRan();
@@ -172,7 +170,8 @@ namespace Atlassian.Bitbucket.Tests
 
         private void MockDCSSOEnabled()
         {
-            bitbucketApi.Setup(ba => ba.GetAuthenticationMethodsAsync()).Returns(Task.FromResult(new List<AuthenticationMethod>(){AuthenticationMethod.BasicAuth, AuthenticationMethod.Sso}));
+            bitbucketApi.Setup(ba => ba.GetAuthenticationMethodsAsync())
+                .Returns(Task.FromResult(new List<AuthenticationMethod> {AuthenticationMethod.BasicAuth, AuthenticationMethod.Sso}));
             bitbucketApi.Setup(ba => ba.IsOAuthInstalledAsync()).Returns(Task.FromResult(true));
         }
 
